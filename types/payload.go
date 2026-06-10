@@ -36,6 +36,9 @@ const (
 	MetaRefineryProbe             = "meta.refinery.probe"
 	MetaRefineryRoot              = "meta.refinery.root"
 	MetaRefineryIncomingUserAgent = "meta.refinery.incoming_user_agent"
+	// Notion fork addition: marks a span that should receive an immediate,
+	// independent sampling decision without waiting for the rest of its trace.
+	MetaRefineryIndividualSpan = "meta.refinery.individual_span"
 
 	// These fields are not used by the refinery itself for sampling decisions.
 	// They are used to pass information from refinery to honeycomb.
@@ -76,6 +79,7 @@ var metadataFields = map[string]metadataField{
 	MetaRefineryProbe:             boolField(MetaRefineryProbe, func(p *Payload) *nullableBool { return &p.MetaRefineryProbe }),
 	MetaRefineryRoot:              boolField(MetaRefineryRoot, func(p *Payload) *nullableBool { return &p.MetaRefineryRoot }),
 	MetaRefineryIncomingUserAgent: stringField(MetaRefineryIncomingUserAgent, func(p *Payload) *string { return &p.MetaRefineryIncomingUserAgent }),
+	MetaRefineryIndividualSpan:    boolField(MetaRefineryIndividualSpan, func(p *Payload) *nullableBool { return &p.MetaRefineryIndividualSpan }),
 
 	MetaRefineryLocalHostname:      stringField(MetaRefineryLocalHostname, func(p *Payload) *string { return &p.MetaRefineryLocalHostname }),
 	MetaStressed:                   boolField(MetaStressed, func(p *Payload) *nullableBool { return &p.MetaStressed }),
@@ -251,6 +255,7 @@ type Payload struct {
 	MetaRefineryProbe             nullableBool // meta.refinery.probe
 	MetaRefineryRoot              nullableBool // meta.refinery.root
 	MetaRefineryIncomingUserAgent string       // meta.refinery.incoming_user_agent
+	MetaRefineryIndividualSpan    nullableBool // meta.refinery.individual_span
 
 	MetaRefineryLocalHostname      string       // meta.refinery.local_hostname
 	MetaStressed                   nullableBool // meta.stressed

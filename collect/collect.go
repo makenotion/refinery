@@ -47,6 +47,11 @@ type Collector interface {
 	// Once the trace is "complete", it'll be passed off to the sampler then
 	// scheduled for transmission.
 	AddSpan(*types.Span) error
+	// AddIndividualSpan adds a span that should receive an immediate sampling
+	// decision on its own, independently from the rest of its trace. The
+	// decision is not cached and the span is never forwarded to peers.
+	// (Notion fork addition.)
+	AddIndividualSpan(*types.Span) error
 	AddSpanFromPeer(*types.Span) error
 	Stressed() bool
 	GetStressedSampleRate(traceID string) (rate uint, keep bool, reason string)
@@ -65,6 +70,8 @@ const (
 	TraceSendEjectedFull    = "trace_send_ejected_full"
 	TraceSendEjectedMemsize = "trace_send_ejected_memsize"
 	TraceSendLateSpan       = "trace_send_late_span"
+	// Notion fork addition.
+	TraceSendIndividualSpan = "trace_send_individual_span"
 )
 
 type sendableTrace struct {
@@ -152,6 +159,8 @@ var inMemCollectorMetrics = []metrics.Metadata{
 	{Name: TraceSendEjectedFull, Type: metrics.Counter, Unit: metrics.Dimensionless, Description: "number of traces that are ready for decision due to cache capacity overrun"},
 	{Name: TraceSendEjectedMemsize, Type: metrics.Counter, Unit: metrics.Dimensionless, Description: "number of traces that are ready for decision due to memory overrun"},
 	{Name: TraceSendLateSpan, Type: metrics.Counter, Unit: metrics.Dimensionless, Description: "number of spans that are sent due to late span arrival"},
+	{Name: TraceSendIndividualSpan, Type: metrics.Counter, Unit: metrics.Dimensionless, Description: "number of spans kept after an individual (partial trace) sampling decision"},
+	{Name: "individual_span_dropped", Type: metrics.Counter, Unit: metrics.Dimensionless, Description: "number of spans dropped by an individual (partial trace) sampling decision"},
 
 	{Name: "dropped_from_stress", Type: metrics.Counter, Unit: metrics.Dimensionless, Description: "number of spans dropped due to stress relief"},
 	{Name: "kept_from_stress", Type: metrics.Counter, Unit: metrics.Dimensionless, Description: "number of spans kept due to stress relief"},
@@ -411,6 +420,15 @@ func (i *InMemCollector) AddSpan(sp *types.Span) error {
 	// Route to the appropriate worker
 	workerIndex := i.getWorkerIDForTrace(sp.TraceID)
 	return i.workers[workerIndex].addSpan(sp)
+}
+
+// AddIndividualSpan accepts a span destined for an immediate, independent
+// sampling decision and routes it to a worker queue, returning immediately.
+// (Notion fork addition.)
+func (i *InMemCollector) AddIndividualSpan(sp *types.Span) error {
+	// Route to the appropriate worker
+	workerIndex := i.getWorkerIDForTrace(sp.TraceID)
+	return i.workers[workerIndex].addIndividualSpan(sp)
 }
 
 // AddSpanFromPeer accepts the incoming span from a peer to a queue and returns immediately

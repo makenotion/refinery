@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/honeycombio/refinery/collect/cache"
+	"github.com/honeycombio/refinery/config"
 	"github.com/honeycombio/refinery/generics"
 	"github.com/honeycombio/refinery/internal/otelutil"
 	"github.com/honeycombio/refinery/sample"
@@ -37,6 +38,9 @@ type CollectorWorker struct {
 	// Input channels specific to this worker
 	incoming chan *types.Span
 	fromPeer chan *types.Span
+	// Spans that get an immediate, independent sampling decision without
+	// joining a trace. (Notion fork addition.)
+	incomingIndividualSpan chan *types.Span
 
 	// Control signal for memory overages
 	sendEarly chan sendEarly
@@ -94,7 +98,8 @@ func NewCollectorWorker(
 		sampleCache: sampleCache,
 		incoming:    make(chan *types.Span, incomingSize),
 		fromPeer:    make(chan *types.Span, peerSize),
-		sendEarly:   make(chan sendEarly, 1),
+		incomingIndividualSpan: make(chan *types.Span, incomingSize),
+		sendEarly:              make(chan sendEarly, 1),
 
 		// Important that this be unbuffered, so the sender blocks until the
 		// signal has been received.
@@ -117,6 +122,26 @@ func (cl *CollectorWorker) addSpan(sp *types.Span) error {
 
 	select {
 	case cl.incoming <- sp:
+		cl.localSpanReceived.Add(1)
+		cl.localSpansWaiting.Add(1)
+		return nil
+	default:
+		return ErrWouldBlock
+	}
+}
+
+// addIndividualSpan adds a span to this worker's individual-span channel
+// (called by the parent manager). (Notion fork addition.)
+func (cl *CollectorWorker) addIndividualSpan(sp *types.Span) error {
+	if cl.parent.BlockOnAddSpan {
+		cl.incomingIndividualSpan <- sp
+		cl.localSpanReceived.Add(1)
+		cl.localSpansWaiting.Add(1)
+		return nil
+	}
+
+	select {
+	case cl.incomingIndividualSpan <- sp:
 		cl.localSpanReceived.Add(1)
 		cl.localSpansWaiting.Add(1)
 		return nil
@@ -190,6 +215,13 @@ func (cl *CollectorWorker) collect() {
 					return
 				}
 				cl.processSpan(ctx, sp)
+			case sp, ok := <-cl.incomingIndividualSpan:
+				if !ok {
+					// channel's been closed; we should shut down.
+					span.End()
+					return
+				}
+				cl.processIndividualSpan(ctx, sp)
 			case sp, ok := <-cl.fromPeer:
 				if !ok {
 					// channel's been closed; we should shut down.
@@ -310,6 +342,103 @@ func (cl *CollectorWorker) processSpan(ctx context.Context, sp *types.Span) {
 			cl.cache.Set(trace)
 		}
 	}
+}
+
+// makeIndividualSpanDecision runs the configured sampler against a
+// single-span trace and returns the decision. Unlike makeDecision, the
+// decision is deliberately not recorded in the sample cache: the rest of this
+// span's trace must continue to be sampled independently. (Notion fork
+// addition.)
+func (cl *CollectorWorker) makeIndividualSpanDecision(trace *types.Trace) sendableTrace {
+	var sampler sample.Sampler
+	var found bool
+	// get sampler key (dataset for legacy keys, environment for new keys)
+	samplerSelector := cl.parent.Config.DetermineSamplerKey(trace.APIKey, trace.Environment, trace.Dataset)
+
+	// use sampler key to find sampler; create and cache if not found
+	if sampler, found = cl.datasetSamplers[samplerSelector]; !found {
+		sampler = cl.parent.SamplerFactory.GetSamplerImplementationForKey(samplerSelector)
+		cl.datasetSamplers[samplerSelector] = sampler
+	}
+
+	// prepopulate the span with key fields; it is the root of its own
+	// single-span trace
+	allFields, _ := sampler.GetKeyFields()
+	for _, sp := range trace.GetSpans() {
+		sp.Data.MemoizeFields(allFields...)
+	}
+
+	rate, shouldSend, reason, key := sampler.GetSampleRate(trace)
+	trace.SetSampleRate(rate)
+	trace.KeepSample = shouldSend
+
+	return sendableTrace{
+		Trace:           trace,
+		reason:          reason,
+		sampleKey:       key,
+		samplerSelector: samplerSelector,
+		rate:            rate,
+		sendReason:      TraceSendIndividualSpan,
+		shouldSend:      shouldSend,
+	}
+}
+
+// processIndividualSpan is used to handle spans with the
+// meta.refinery.individual_span attribute set. This tells us to make a
+// decision immediately on just this span independently from the rest of its
+// trace. We still apply the configured samplers, using them as though this
+// were a trace of a single span. The decision is not saved and nothing enters
+// the cache. Since the trace does not need to be aggregated, there is no need
+// to redistribute the span to peers. (Notion fork addition.)
+func (cl *CollectorWorker) processIndividualSpan(ctx context.Context, sp *types.Span) {
+	_, span := otelutil.StartSpanWith(ctx, cl.parent.Tracer, "processIndividualSpan", "trace_id", sp.TraceID)
+	defer func() {
+		cl.localSpanProcessed++
+		cl.localSpansWaiting.Add(-1)
+		span.End()
+	}()
+
+	now := cl.parent.Clock.Now()
+	trace := &types.Trace{
+		APIHost:     sp.APIHost,
+		APIKey:      sp.APIKey,
+		Dataset:     sp.Dataset,
+		Environment: sp.Environment,
+		TraceID:     sp.TraceID,
+		ArrivalTime: now,
+		SendBy:      now,
+		RootSpan:    sp,
+	}
+	trace.AddSpan(sp)
+	trace.SetSampleRate(sp.SampleRate)
+
+	td := cl.makeIndividualSpanDecision(trace)
+
+	isDryRun := cl.parent.Config.GetIsDryRun()
+	if !td.shouldSend && !isDryRun {
+		cl.parent.Metrics.Increment("individual_span_dropped")
+		return
+	}
+
+	cl.parent.Metrics.Increment(td.sendReason)
+
+	if cl.parent.Config.GetAddRuleReasonToTrace() {
+		sp.Data.Set(types.MetaRefineryReason, td.reason)
+		sp.Data.Set(types.MetaRefinerySendReason, td.sendReason)
+		if td.sampleKey != "" {
+			sp.Data.Set(types.MetaRefinerySampleKey, td.sampleKey)
+		}
+	}
+	if isDryRun {
+		sp.Data.Set(config.DryRunFieldName, td.shouldSend)
+	}
+	if cl.parent.hostname != "" {
+		sp.Data.Set(types.MetaRefineryLocalHostname, cl.parent.hostname)
+	}
+	mergeTraceAndSpanSampleRates(sp, trace.SampleRate(), isDryRun)
+	cl.parent.addAdditionalAttributes(sp)
+
+	cl.parent.Transmission.EnqueueSpan(sp)
 }
 
 // sendExpiredTracesInCache finds and sends traces that have exceeded their timeout

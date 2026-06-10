@@ -776,6 +776,18 @@ func (r *Router) processEvent(ev *types.Event, reqID interface{}) error {
 		}
 	}
 
+	// Notion fork addition: if the span has the individual_span attribute, we
+	// want to run it through the sampler rules by itself without waiting for
+	// other spans or retaining the decision. This maybe should go before
+	// stress relief.
+	if !isProbe && ev.Data.MetaRefineryIndividualSpan.HasValue && ev.Data.MetaRefineryIndividualSpan.Value {
+		if err := r.Collector.AddIndividualSpan(span); err != nil {
+			r.Metrics.Increment(r.metricsNames.routerDropped)
+			debugLog.Logf("Dropping individual span from batch, channel full")
+		}
+		return nil
+	}
+
 	// Figure out if we should handle this span locally or pass on to a peer
 	targetShard := r.Sharder.WhichShard(ev.Data.MetaTraceID)
 	if !targetShard.Equals(r.Sharder.MyShard()) {
