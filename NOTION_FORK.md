@@ -52,10 +52,27 @@ re-resolve it by hand if upstream reworks the collector again.
 The deployable image is built from this repo and pushed to the `refinery-base` ECR
 repo, then consumed by `docker/refinery/Dockerfile` in notion-next:
 
-1. `./build-docker.sh` (or `ko build` directly) to build the image.
+1. Tag the fork (see "Versioning"), then run `./build-docker.sh`. Do **not** publish
+   a raw `ko build` / `go build` image — it reports `service.version="dev"`.
 2. Tag and push as
    `274567149370.dkr.ecr.us-west-2.amazonaws.com/refinery-base:<short commit sha>`.
 3. Update the `FROM` tag in notion-next `docker/refinery/Dockerfile`.
 
 The pubsub package's Redis tests require a local Redis on `:6379`; all other tests
 run standalone.
+
+## Versioning
+
+`cmd/refinery/main.go` stamps the OTLP `service.version` resource attribute from a
+`main.BuildID` symbol set via ldflags at compile time, falling back to `"dev"` when
+the ldflag is absent. We read `service.version` in Notion's Honeycomb `metrics`
+dataset to tell rollouts/builds apart, so a `"dev"` value (every container
+indistinguishable) is a bug. When publishing the `refinery-base` image:
+
+- **Build via `build-docker.sh`** (or any build passing
+  `-ldflags "-X main.BuildID=<version>"`); it derives the version from
+  `git describe --tags --match='v[0-9]*' --always`. A raw `ko build` / `go build`
+  omits the ldflag and yields `service.version="dev"`.
+- **Tag the fork first** with a `v3.x`-style tag so `git describe` produces a
+  meaningful version, not a bare sha. Convention: `v3.2.2-notion.1`, incrementing
+  the `-notion.N` suffix per Notion fork build.
