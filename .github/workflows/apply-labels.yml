@@ -2,6 +2,8 @@ name: Apply project labels
 on: [issues, pull_request_target, label]
 jobs:
   apply-labels:
+    # Honeycomb project labels are managed only in the upstream repository.
+    if: github.repository == 'honeycombio/refinery'
     runs-on: ubuntu-latest
     name: Apply common project labels
     steps:
