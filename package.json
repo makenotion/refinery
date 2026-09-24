@@ -1,0 +1,32 @@
+{
+  "name": "@notionhq/refinery-config-types",
+  "version": "0.0.0",
+  "private": true,
+  "description": "TypeScript configuration types generated from Notion Refinery metadata",
+  "license": "Apache-2.0",
+  "type": "module",
+  "types": "./config-types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./config-types/index.d.ts"
+    }
+  },
+  "files": [
+    "config-types/index.d.ts",
+    "config-types/README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "generate": "node --experimental-strip-types config-types/generate.ts",
+    "check:generated": "node --experimental-strip-types config-types/generate.ts --check",
+    "test": "npm run check:generated && node --experimental-strip-types --test config-types/generate.test.mjs && tsc --project config-types/tsconfig.json"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.4",
+    "typescript": "5.9.3",
+    "yaml": "2.9.1"
+  }
+}

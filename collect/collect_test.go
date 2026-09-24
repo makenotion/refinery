@@ -2219,3 +2219,148 @@ func (c *mockSender) waitForCount(target int) {
 		}
 	}
 }
+
+// individualSpanTestConfig returns a MockConfig suitable for the
+// AddIndividualSpan tests. (Notion fork addition.)
+func individualSpanTestConfig() *config.MockConfig {
+	return &config.MockConfig{
+		GetTracesConfigVal: config.TracesConfig{
+			SendTicker:   config.Duration(2 * time.Millisecond),
+			SendDelay:    config.Duration(1 * time.Millisecond),
+			TraceTimeout: config.Duration(5 * time.Minute),
+			MaxBatchSize: 500,
+		},
+		GetSamplerTypeVal:  &config.DeterministicSamplerConfig{SampleRate: 1},
+		ParentIdFieldNames: []string{"trace.parent_id", "parentId"},
+		GetCollectionConfigVal: config.CollectionConfig{
+			WorkerCount:       1,
+			ShutdownDelay:     config.Duration(1 * time.Millisecond),
+			IncomingQueueSize: 5,
+			PeerQueueSize:     5,
+		},
+		SampleCache: config.SampleCacheConfig{
+			KeptSize:          100,
+			DroppedSize:       100,
+			SizeCheckInterval: config.Duration(1 * time.Second),
+		},
+	}
+}
+
+// individualSpanInSentCache reports whether the given span's trace has an
+// entry in the worker's sample (sent decision) cache. (Notion fork addition.)
+func individualSpanInSentCache(coll *InMemCollector, sp *types.Span) bool {
+	cl := coll.workers[coll.getWorkerIDForTrace(sp.TraceID)]
+
+	ch := make(chan struct{})
+	defer close(ch)
+
+	cl.pause <- ch
+	_, _, found := cl.sampleCache.CheckSpan(sp)
+	return found
+}
+
+// TestAddIndividualSpan exercises the Notion fork's partial trace sampling
+// feature: spans submitted via AddIndividualSpan get an immediate,
+// independent sampling decision that is never recorded in any cache.
+func TestAddIndividualSpan(t *testing.T) {
+	t.Run("kept span is transmitted and not cached", func(t *testing.T) {
+		conf := individualSpanTestConfig()
+		coll := newTestCollector(t, conf)
+		transmission := coll.Transmission.(*transmit.MockTransmission)
+
+		sp := &types.Span{
+			TraceID: "test-trace-id",
+			Event: &types.Event{
+				APIKey:  legacyAPIKey,
+				Dataset: "test-dataset",
+				Data: types.NewPayload(conf, map[string]interface{}{
+					"name": "test-span",
+				}),
+			},
+		}
+
+		err := coll.AddIndividualSpan(sp)
+		require.NoError(t, err)
+
+		events := transmission.GetBlock(1)
+		require.Equal(t, 1, len(events), "expected 1 span to be enqueued")
+		assert.Equal(t, "test-span", events[0].Data.Get("name"))
+
+		v, ok := coll.Metrics.Get(TraceSendIndividualSpan)
+		require.True(t, ok, "should have a send reason metric for TraceSendIndividualSpan")
+		assert.Equal(t, float64(1), v, "should have incremented TraceSendIndividualSpan metric")
+
+		assert.False(t, individualSpanInSentCache(coll, sp),
+			"expected span to not be in sample trace cache")
+		assert.Nil(t, getFromCache(coll, sp.TraceID),
+			"expected trace to not be in the trace cache")
+	})
+
+	t.Run("dropped span is not transmitted", func(t *testing.T) {
+		conf := individualSpanTestConfig()
+		conf.GetSamplerTypeVal = &config.RulesBasedSamplerConfig{Rules: []*config.RulesBasedSamplerRule{
+			{
+				Drop: true,
+			},
+		}}
+		coll := newTestCollector(t, conf)
+		transmission := coll.Transmission.(*transmit.MockTransmission)
+
+		sp := &types.Span{
+			TraceID: "test-trace-id-2",
+			Event: &types.Event{
+				APIKey:  legacyAPIKey,
+				Dataset: "test-dataset",
+				Data: types.NewPayload(conf, map[string]interface{}{
+					"name": "test-span-2",
+				}),
+			},
+		}
+
+		err := coll.AddIndividualSpan(sp)
+		require.NoError(t, err)
+
+		events := transmission.GetBlock(0)
+		assert.Equal(t, 0, len(events), "expected no spans to be enqueued (dropped)")
+
+		assert.Eventually(t, func() bool {
+			v, ok := coll.Metrics.Get("individual_span_dropped")
+			return ok && v == float64(1)
+		}, time.Second, 10*time.Millisecond, "should have incremented individual_span_dropped metric")
+	})
+
+	t.Run("dropped span is still transmitted in dry run mode", func(t *testing.T) {
+		conf := individualSpanTestConfig()
+		conf.DryRun = true
+		conf.GetSamplerTypeVal = &config.RulesBasedSamplerConfig{Rules: []*config.RulesBasedSamplerRule{
+			{
+				Drop: true,
+			},
+		}}
+		coll := newTestCollector(t, conf)
+		transmission := coll.Transmission.(*transmit.MockTransmission)
+
+		sp := &types.Span{
+			TraceID: "test-trace-id-3",
+			Event: &types.Event{
+				APIKey:  legacyAPIKey,
+				Dataset: "test-dataset",
+				Data: types.NewPayload(conf, map[string]interface{}{
+					"name": "test-span-3",
+				}),
+			},
+		}
+
+		err := coll.AddIndividualSpan(sp)
+		require.NoError(t, err)
+
+		events := transmission.GetBlock(1)
+		require.Equal(t, 1, len(events), "expected 1 span to be enqueued in dry run mode")
+		assert.Equal(t, "test-span-3", events[0].Data.Get("name"))
+		assert.Equal(t, false, events[0].Data.Get(config.DryRunFieldName),
+			"dry run field should record that the span would have been dropped")
+
+		assert.False(t, individualSpanInSentCache(coll, sp),
+			"expected span to not be in sample trace cache")
+	})
+}
