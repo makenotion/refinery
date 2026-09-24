@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import YAML from "yaml";
 
 type MetadataValidation = {
@@ -137,7 +138,7 @@ function isMetadataGroup(value: unknown): value is MetadataGroup {
   );
 }
 
-function generateConfigTypes(meta: MetadataFile): string {
+export function generateConfigTypes(meta: MetadataFile): string {
   const sections: string[] = [];
   const rootFields: string[] = [];
 
@@ -440,14 +441,17 @@ function indent(block: string): string {
     .join("\n");
 }
 
-const generated = generateRefineryConfigTypes();
-if (process.argv.includes("--check")) {
-  if (readFileSync(output, "utf8") !== generated) {
-    throw new Error(
-      "Generated Refinery types are stale. Run npm run generate.",
-    );
+// Importing the generator for fixture tests must not rewrite the declarations.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const generated = generateRefineryConfigTypes();
+  if (process.argv.includes("--check")) {
+    if (readFileSync(output, "utf8") !== generated) {
+      throw new Error(
+        "Generated Refinery types are stale. Run npm run generate.",
+      );
+    }
+  } else {
+    writeFileSync(output, generated);
+    console.log(`Generated ${fileURLToPath(output)}`);
   }
-} else {
-  writeFileSync(output, generated);
-  console.log(`Generated ${fileURLToPath(output)}`);
 }

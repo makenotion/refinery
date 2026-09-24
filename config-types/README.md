@@ -31,7 +31,16 @@ npm pack --dry-run
 
 Commit regenerated `config-types/index.d.ts` whenever the metadata or generator
 changes. CI checks that generation is reproducible and compiles both valid and
-intentionally invalid consumer examples. The declaration header records a hash
+intentionally invalid consumer examples. Generator fixture tests also compile
+small schemas to check required fields, conflicting fields, conditional
+requirements (including defaults), and failure on unknown field types or invalid
+constraint references. Run them alone with:
+
+```sh
+node --experimental-strip-types --test config-types/generate.test.mjs
+```
+
+The declaration header records a hash
 of both metadata files so packaging-only commits do not imply a schema change.
 
 The small structural mapping in `generate.ts` connects rules, conditions, and
