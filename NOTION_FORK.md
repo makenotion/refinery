@@ -59,3 +59,12 @@ repo, then consumed by `docker/refinery/Dockerfile` in notion-next:
 
 The pubsub package's Redis tests require a local Redis on `:6379`; all other tests
 run standalone.
+
+## TypeScript configuration types
+
+This fork also owns the `@notionhq/refinery-config-types` package, generated
+from the canonical configuration metadata. When upgrading metadata, run
+`npm ci && npm run generate && npm test` and include the updated declarations.
+See [config-types/README.md](config-types/README.md) for consumption, provenance,
+and validation limitations. Carry the package and its CI check forward when
+rebasing the Notion patch set onto a new upstream release.
