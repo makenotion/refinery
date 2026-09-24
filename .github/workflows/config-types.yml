@@ -1,0 +1,34 @@
+name: Config types
+
+on:
+  pull_request:
+    paths:
+      - "config/metadata/**"
+      - "config-types/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/config-types.yml"
+  push:
+    branches: [notion-main]
+    paths:
+      - "config/metadata/**"
+      - "config-types/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/config-types.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  config-types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm pack --dry-run
